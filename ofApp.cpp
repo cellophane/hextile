@@ -1,3 +1,4 @@
+#include <string>
 #include "ofApp.h"
 struct hexInfo {
 	int squaredDistance;
@@ -9,6 +10,10 @@ struct CubeCoord {
 	int z{0};
 
 };
+bool operator==(const CubeCoord& lhs, const CubeCoord& rhs)
+{
+	return lhs.x == rhs.x && lhs.y == rhs.y && lhs.z == rhs.z;
+}
 bool operator<(const CubeCoord& l, const CubeCoord& r) {
 	return (l.x < r.x || (l.x == r.x && l.y < r.y));
 }
@@ -16,12 +21,12 @@ struct Point {
 	float x;
 	float y;
 };
-const float pi = 3.14159;
+const float pi = 3.14159265359;
 //radius of the major hexagon
-int hexSize = 100;
+int hexSize = 24;
 
 //minor hex size in pixels (center to vertex)
-int hexSizePix = 1;
+float hexSizePix = 6.;
 float hexWidth = sqrt(3) * hexSizePix;
 float hexHeight = 2 * hexSizePix;
 
@@ -30,7 +35,7 @@ float xCube[2] = { hexWidth / 2.,3. / 4. * hexHeight };
 float yCube[2] = { -hexWidth / 2.,3. / 4. * hexHeight };
 
 //pixel coordinate of center of major hexagon
-ofPoint pixelCenter((hexSize+.5)* hexWidth, hexSize* hexHeight);
+ofPoint pixelCenter((hexSize+.5)* hexWidth, (hexSize+.5)* hexHeight);
 CubeCoord center = { 0,0,0 };
 //cardinal hex directions
 const CubeCoord cubeDirections[6] = { {1,-1,0},{1,0,-1},{0,1,-1},{-1,1,0},{-1,0,1},{0,-1,1} };
@@ -41,8 +46,16 @@ vector<CubeCoord> mirrorCenters;
 map<CubeCoord, pair<int, int>> hexes;
 //piece origins
 vector<CubeCoord> pieceOrigins;
+//number of hexes in each blob
+vector<int> blobSize;
 
 vector<ofColor> colors;
+float temp = 100.;
+float cooling = .99;
+//total hexes in grid
+int totalHexes = 0;
+//total number of blobs
+int totalBlobs = 0;
 
 CubeCoord rotateClockwise(CubeCoord a) {
 	return CubeCoord{ -a.z,-a.x,-a.y };
@@ -55,6 +68,27 @@ CubeCoord cubeSub(CubeCoord a, CubeCoord b) {
 }
 int cubeDistance(CubeCoord a, CubeCoord b) {
 	return max(max(abs(a.x - b.x), abs(a.y - b.y)), abs(a.z - b.z));
+}
+int mirrorDistance(CubeCoord a, CubeCoord b) {
+	int d = cubeDistance(a,b);
+	if (d == 1) return d;
+	for (int i = 0; i < 6; ++i) {
+		d = min(d, cubeDistance(a, cubeAdd(b, mirrorCenters[i])));
+	}
+	return d;
+}
+CubeCoord closestMirror(CubeCoord ref, CubeCoord other){
+	int d = cubeDistance(ref, other);
+	CubeCoord closest = other;
+	for (int i = 0; i < 6; ++i) {
+		CubeCoord added = cubeAdd(other, mirrorCenters[i]);
+		int d1 = cubeDistance(ref, added);
+		if (d1 < d) {
+			closest = added;
+			d = d1;
+		}
+	}
+	return closest;
 }
 int squareCubeEuclideanDistance(CubeCoord a, CubeCoord b) {
 	int d = (a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) - (a.x - b.x) * (a.y - b.y);
@@ -88,10 +122,41 @@ void drawHex(CubeCoord c) {
 	ofBeginShape();
 	auto center = euclideanCenter(c);
 	for (int theta = 30; theta < 360; theta += 60) {
-		ofVertex(center.x + hexSizePix * cos(theta * pi / 180.)+pixelCenter.x, center.y + hexSizePix * sin(theta * pi / 180.) + pixelCenter.y);
+		ofVertex(center.x + hexSizePix * cos(theta * pi / 180.)+pixelCenter.x + 200, center.y + hexSizePix * sin(theta * pi / 180.) + pixelCenter.y + 200);
 	}
 	ofEndShape();
 	
+}
+void drawHexEdge(pair<CubeCoord, CubeCoord> edge) {
+	CubeCoord a = edge.first;
+	CubeCoord b = edge.second;
+	if (cubeDistance(a, b) != 1) {
+		cout << "bad edge";
+		return;
+	}
+	auto center = euclideanCenter(a);
+	//stupid way of doing this
+	vector<ofPoint> aPoint;
+	vector<ofPoint> bPoint;
+	for (int theta = 30; theta < 360; theta += 60) {
+		aPoint.push_back(ofPoint(center.x + hexSizePix * cos(theta * pi / 180.) + pixelCenter.x, center.y + hexSizePix * sin(theta * pi / 180.) + pixelCenter.y));
+	}
+	center = euclideanCenter(b);
+	for (int theta = 30; theta < 360; theta += 60) {
+		bPoint.push_back(ofPoint(center.x + hexSizePix * cos(theta * pi / 180.) + pixelCenter.x, center.y + hexSizePix * sin(theta * pi / 180.) + pixelCenter.y));
+	}
+	vector<ofPoint> edgePoints; //woooow
+	for (int i = 0; i < 6; ++i) {
+		ofPoint a = aPoint[i];
+		for (int j = 0; j < 6; ++j) {
+			ofPoint b = bPoint[j];
+			if (a.distance(b) < .01) {
+				edgePoints.push_back(a);
+			}
+		}
+	}
+	if (edgePoints.size() != 2) cout << "what are you doing?" << endl;
+	ofDrawLine(edgePoints[0]+200, edgePoints[1]+200);
 }
 void printCube(CubeCoord a) {
 	cout << a.x << "," << a.y << "," << a.z;
@@ -113,8 +178,15 @@ vector <CubeCoord> neighbors(CubeCoord a) {
 	}
 	return n;
 }
+vector<CubeCoord> unrecenterNeighbors(CubeCoord a) {
+	vector<CubeCoord> n;
+	for (CubeCoord dir : cubeDirections) {
+		n.push_back(cubeAdd(a, dir));
+	}
+	return n;
+}
 void centroid() {
-	cout << "centroid" << endl;
+	//cout << "centroid" << endl;
 	int pieceCount = 0;
 	for (auto o : pieceOrigins) {
 		int newX = 0;
@@ -154,7 +226,7 @@ void centroid() {
 		pieceOrigins[pieceCount] = recenter({ newX / newCount,newY / newCount,-newX / newCount - newY / newCount });
 		pieceCount += 1;
 	}
-	cout << "done centroid" << endl;
+	//cout << "done centroid" << endl;
 }
 void voronoi() {
 	cout << "voronoi" << endl;
@@ -191,9 +263,28 @@ void voronoi() {
 	}
 	cout << "done voronoi" << endl;
 }
+
+void countBlobs() {
+	blobSize.clear();
+	blobSize.resize(pieceOrigins.size());
+	for (int i = -hexSize; i < hexSize+1; ++i) {
+		for (int j = -hexSize; j < hexSize+1; ++j) {
+			if (abs(i + j) > hexSize) {
+				continue;
+			}
+			CubeCoord c = { i,j,-i - j };
+			int C = hexes[c].first;
+			if (C > -1) {
+				totalHexes += 1;
+				blobSize[C] += 1;
+			}
+		}
+	}
+}
+
 void testGrid() {
 	cout << "testgrid" << endl;
-	for (int i = 0; i < 200; ++i) {
+	for (int i = 0; i < 200000; ++i) {
 		int x = ofRandom(-hexSize, hexSize);
 		int y = ofRandom(-hexSize, hexSize);
 		CubeCoord c = { x,y,-x - y };
@@ -202,7 +293,7 @@ void testGrid() {
 		}
 		bool good = true;
 		for (auto o : pieceOrigins) {
-			if (squareCubeEuclideanDistance(o, c) < 10) {
+			if (mirrorDistance(o, c) < 6) {
 				good = false;
 				break;
 			}
@@ -218,13 +309,16 @@ void testGrid() {
 	//}
 	
 	voronoi();
-	cout << "done testgrid" << endl;
+	cout << "num pieces: " <<  pieceOrigins.size() << endl;
 }
 
 ofFbo test;
-void drawImage() {
-	cout << "start make image";
-	test.allocate(4000, 4000);
+void drawImage(bool save = false) {
+
+	test.allocate(hexWidth*hexSize*3, hexHeight * hexSize * 3);
+	if (save) {
+		ofBeginSaveScreenAsPDF("test image.pdf");
+	}
 	test.begin();
 	for (int i = -hexSize; i <= hexSize; ++i) {
 		for (int j = -hexSize; j <= hexSize; ++j) {
@@ -263,11 +357,157 @@ void drawImage() {
 		}
 	}
 	}
-	
+
 	test.end();
-	cout << "done make image";
+	if (save) {
+		ofEndSaveScreenAsPDF();
+	}
+}
+pair<CubeCoord, CubeCoord> makeHexPair(CubeCoord a, CubeCoord b) {
+	if (a.x < b.x) return make_pair(a, b);
+	if (a.x > b.x) return make_pair(b, a);
+	if (a.y < b.y) return make_pair(a, b);
+	return make_pair(b, a);
+}
+void exportPdf() {
+	
+	vector<pair<CubeCoord, CubeCoord>> drawnEdges;
+	
+	for (int i = 0; i < blobSize.size(); ++i) {
+		vector<CubeCoord> blobHexes;
+		blobHexes.clear();
+		for (int j = -hexSize; j <= hexSize; ++j) {
+			for (int k = -hexSize; k <= hexSize; ++k) {
+				if (abs(j + k) > hexSize) continue;
+				CubeCoord c = { j,k,-j - k };
+				if (hexes[c].first == i) blobHexes.push_back(c);
+			}
+		}
+		if (blobHexes.size() == 0) continue;
+		CubeCoord pieceOrigin = blobHexes[0];
+		for (int j = 0; j < blobHexes.size(); ++j) {
+			blobHexes[j] = closestMirror(pieceOrigin, blobHexes[j]);
+		}
+		for (int j = 0; j < blobHexes.size(); ++j) {
+			CubeCoord curr = blobHexes[j];
+			vector<CubeCoord> neighs = unrecenterNeighbors(curr);
+			for (auto neigh : neighs) {
+				if (find(blobHexes.begin(), blobHexes.end(), neigh) == blobHexes.end()) {
+					pair<CubeCoord, CubeCoord> hexEdge = makeHexPair(curr, neigh);
+					if (find(drawnEdges.begin(), drawnEdges.end(), hexEdge) == drawnEdges.end()) {
+						drawnEdges.push_back(hexEdge);
+					}
+				}
+			}
+		}
+	}
+	ofFbo offscreen;
+	offscreen.allocate(hexSize * hexHeight * 4., hexSize * hexHeight * 4.,OF_IMAGE_COLOR);
+	offscreen.begin();
+	ofBeginSaveScreenAsPDF("test.pdf");
+	drawHex(center);
+	ofSetColor(255, 0, 255);
+	for (auto hexEdge : drawnEdges) {
+		drawHexEdge(hexEdge);
+	}
+	offscreen.end();
+	ofEndSaveScreenAsPDF();
 }
 
+int countSame(CubeCoord a,vector<CubeCoord>& neighs, vector<CubeCoord>&others) {
+	int count = 0;
+	neighs.clear();
+	others.clear();
+	auto n = neighbors(a);
+	int me = hexes[a].first;
+	if (me == -1) return -1;
+	for (auto neigh : n) {
+		int them = hexes[neigh].first;
+		if (them == me) {
+			count += 1; neighs.push_back(neigh);
+		}
+		else {
+			others.push_back(neigh);
+		}
+
+	}
+	return count;
+}
+bool checkContinuous(vector<CubeCoord> neighbors) {
+
+	if (neighbors.size() == 0) return true;
+	int c0 = neighbors.size();
+	CubeCoord neigh = neighbors[neighbors.size()-1];
+	neighbors.pop_back();
+	queue<CubeCoord> goodNeighbors;
+	goodNeighbors.push(neigh);
+	int countGood = 1;
+	while(goodNeighbors.size()>0){
+		CubeCoord cur = recenter(goodNeighbors.front());
+		goodNeighbors.pop();
+		for (int i = neighbors.size()-1; i >= 0;--i) {
+			CubeCoord other = neighbors[i];
+			if (mirrorDistance(cur, other) == 1) {
+				countGood += 1;
+				goodNeighbors.push(other);
+				neighbors.erase(neighbors.begin() + i);
+			}
+		}
+		
+	}
+	if (countGood == c0) return true;
+	return false;
+}
+bool flip() {
+	int i = ofRandom(-hexSize-1, hexSize+1);
+	int j = ofRandom(-hexSize-1, hexSize+1);
+	
+	while (abs(i + j) > hexSize) {
+		i = ofRandom(-hexSize - 1, hexSize + 1);
+		j = ofRandom(-hexSize - 1, hexSize + 1);
+	}
+	int k = -i - j;
+	CubeCoord c = { i,j,k };
+	c = recenter(c);
+	int meme = hexes[c].first;
+	vector<CubeCoord> neighbors;
+	vector<CubeCoord> others;
+	
+	int count = countSame(c, neighbors, others);
+	if (neighbors.size() < 3) return false;
+	if (neighbors.size() <= others.size()) {
+		int d = others.size() - neighbors.size();
+		if (d * 10 > temp+ofRandom(1)-.5) { cout << "temp" << endl; return false;
+	}
+	}
+
+	
+	if (neighbors.size() == 6) {
+		//cout << "same neighbors" << endl;
+		return false;
+	}
+	if (checkContinuous(neighbors)) {
+		CubeCoord other = others[int(ofRandom(others.size()))];
+		int newColor = hexes[other].first;
+		if (blobSize[meme] < 6) return false;
+		if (blobSize[meme]*1.5 < blobSize[newColor]) {
+			return false;
+		}
+		neighbors.clear(); others.clear();
+		if (countSame(other, neighbors, others) < 3) return false;
+		if (!checkContinuous(neighbors)) return false;
+		//if (mirrorDistance(pieceOrigins[newColor], c) > 4*2) return false;
+		pair<int, int> thisOne = hexes[c];
+		blobSize[meme] -= 1;
+		blobSize[newColor] += 1;
+		hexes[c] = make_pair(newColor, thisOne.second);
+		//cout << "flipped. was " << meme << " now I'm " << newColor << endl;
+		return true;
+	}
+	//cout << "noncontinous neighbors " << endl;
+	return false;
+
+}
 //--------------------------------------------------------------
 void ofApp::setup(){
 	CubeCoord mirror1 = { 2 * hexSize + 1,-hexSize - 1,-hexSize };
@@ -289,7 +529,7 @@ void ofApp::setup(){
 	cout << "recenter ";
 	printCube(recenter(d));
 	cout << endl;
-	for (int i = 0; i < 1000; ++i) {
+	for (int i = 0; i < 10000; ++i) {
 		ofColor c = { ofRandom(0,255),ofRandom(0,255) ,ofRandom(0,255) };
 		colors.push_back(c);
 	}
@@ -297,24 +537,61 @@ void ofApp::setup(){
 	drawImage();
 	
 }
-
+int countFrame = 0;
+float iter = 100;
+float increase = 1.01;
 //--------------------------------------------------------------
 void ofApp::update(){
+	
+	int iters = 10000;
+	int countChange = 0;
+	temp = temp * cooling;
+	countFrame += 1;
+	bool changed = 0;
+	if (countFrame < 5) {
+		voronoi();
+		centroid();
+		countBlobs();
+	}
 
+	else {
+		centroid();
+		for (int i = 0; i < iters; ++i) {
+			countChange += int(flip());
+			
+		}
+	}
+	//printf("\33[2K\r");
+	cout << temp << ":" << countChange*1.0/ iter << endl;
+	if (countChange>0) {
+		drawImage(countFrame%100==0);
+	}
+	else {
+		
+	}
+	if ( countFrame%100==0) {
+		ofImage i; i.allocate(test.getWidth(), test.getHeight(), OF_IMAGE_COLOR);
+		test.readToPixels(i);
+		i.update();
+		//i.resize(i.getWidth() / 4., i.getHeight() / 4.);
+		auto s = to_string(countFrame);
+		auto pad = string(6 - s.size(), '0');
+		i.save("test" +pad+s + ".png");
+		exportPdf();
+	}
 }
 
 //--------------------------------------------------------------
 void ofApp::draw(){
-	voronoi();
-	centroid();
-	drawImage();
+
+	
 	test.draw(0, 0);
 	
 }
 
 //--------------------------------------------------------------
 void ofApp::keyPressed(int key){
-
+	if (key == 's') exportPdf();
 }
 
 //--------------------------------------------------------------
