@@ -1,5 +1,6 @@
 #include <string>
 #include "ofApp.h"
+#include "ofxSvg.h"
 struct hexInfo {
 	int squaredDistance;
 	int pieceID;
@@ -31,8 +32,8 @@ float hexWidth = sqrt(3) * hexSizePix;
 float hexHeight = 2 * hexSizePix;
 
 //cube to cartesian coordinate vectors
-float xCube[2] = { hexWidth / 2.,3. / 4. * hexHeight };
-float yCube[2] = { -hexWidth / 2.,3. / 4. * hexHeight };
+float xCube[2] = { hexWidth,0};
+float yCube[2] = { hexWidth / 2.,3. / 4. * hexHeight };
 
 //pixel coordinate of center of major hexagon
 ofPoint pixelCenter((hexSize+.5)* hexWidth, (hexSize+.5)* hexHeight);
@@ -57,6 +58,14 @@ int totalHexes = 0;
 //total number of blobs
 int totalBlobs = 0;
 
+//Puzzle Constants
+float puzzleWidthInches = 5;
+float puzzleHeightInches = 5;
+float pixelToPPI = 1.0; //PDF PPI = 72.0
+float inchToPixel = 72.; 
+vector<ofPolyline> whimsies;
+vector<vector<CubeCoord>> whimsyHexes;
+vector<CubeCoord> mousehex;
 CubeCoord rotateClockwise(CubeCoord a) {
 	return CubeCoord{ -a.z,-a.x,-a.y };
 }
@@ -127,6 +136,64 @@ void drawHex(CubeCoord c) {
 	ofEndShape();
 	
 }
+CubeCoord cubeRound(float q, float r, float s) {
+	float qr = round(q);
+	float rr = round(r);
+	float sr = round(s);
+
+	float q_diff = abs(q - qr);
+	float r_diff = abs(r - rr);
+	float s_diff = abs(s - sr);
+
+	if (q_diff > r_diff and q_diff > s_diff) {
+		qr = -rr - sr;
+	}
+	else if (r_diff > s_diff) {
+		rr = -qr - sr;
+	}
+	else
+		sr = -qr - rr;
+	CubeCoord c;
+	c.x = int(qr); c.y = int(rr); c.z = int(sr);
+	return c;
+}
+CubeCoord pixelToHex(ofPoint p){
+	p = p - pixelCenter;
+	float q = (sqrt(3.) / 3. * p.x - 1. / 3 * p.y) / hexSizePix;
+	float r = (-2. / 3 * p.y) / hexSizePix;
+	return cubeRound(q, r, -q - r);
+}
+vector<CubeCoord> whimsyIntersects(ofPolyline whim) {
+	vector<CubeCoord> v;
+	ofFbo offscreen;
+	offscreen.allocate(puzzleWidthInches * inchToPixel, puzzleHeightInches * inchToPixel);
+	ofSetColor(0);
+	offscreen.begin();
+	ofBeginShape();
+	for (auto vert : whim) {
+		ofVertex(vert);
+	}
+	ofEndShape();
+	ofImage im;
+	offscreen.readToPixels(im);
+	offscreen.end();
+	im.update();
+	im.save("test.png");
+	ofColor c;
+	for (int i = 0; i < im.getWidth(); ++i) {
+		for (int j = 0; j < im.getHeight(); ++j) {
+			c = im.getColor(i, j);
+			if (c == ofColor(0)) {
+				CubeCoord coord = pixelToHex(ofPoint(i, j));
+				if (find(v.begin(), v.end(), coord) == v.end()) {
+					v.push_back(coord);
+					cout << "hit " << coord.x << "," << coord.y << "," << coord.z << endl;
+				}
+			}
+		}
+	}
+	return v;
+}
 void drawHexEdge(pair<CubeCoord, CubeCoord> edge) {
 	CubeCoord a = edge.first;
 	CubeCoord b = edge.second;
@@ -171,10 +238,26 @@ CubeCoord recenter(CubeCoord a) {
 	}
 	return a;
 }
-vector <CubeCoord> neighbors(CubeCoord a) {
+vector <CubeCoord> neighbors(CubeCoord a,bool noWhimsyNeighbor = false) {
 	vector<CubeCoord> n;
 	for (CubeCoord dir : cubeDirections) {
-		n.push_back(recenter(cubeAdd(a, dir)));
+		CubeCoord c1 = recenter(cubeAdd(a, dir));
+		if (noWhimsyNeighbor) {
+			bool good = true;
+			for (auto whim : whimsyHexes) {
+				if (find(whim.begin(), whim.end(), c1) != whim.end()) {
+					good = false;
+					break;
+				}
+			}
+			if (good) {
+				n.push_back(c1);
+			}
+
+		}
+		else {
+			n.push_back(c1);
+		}
 	}
 	return n;
 }
@@ -236,13 +319,25 @@ void voronoi() {
 				continue;
 			}
 			CubeCoord c = { i,j,-i - j };
-			hexes[c] = make_pair(-1, 100000000000);
+			bool inWhimsy = false;
+			int whimsyID = -1;
+			for(int i=0;i<whimsyHexes.size();i++){
+				auto whim = whimsyHexes[i];
+				if (find(whim.begin(), whim.end(), c) != whim.end()) {
+					whimsyID = i;
+					inWhimsy = true;
+					break;
+				}
+			}
+			int d = 100000000000;
+			if (inWhimsy) d = -1;
+			hexes[c] = make_pair(whimsyID, d);
 		}
 	}
 	int pieceCount = 0;
 	for (CubeCoord o : pieceOrigins) {
 		hexes[o] = make_pair(pieceCount, 0);
-		auto currentNeighbors = neighbors(o);
+		auto currentNeighbors = neighbors(o,true);
 		while (currentNeighbors.size() > 0) {
 			auto neighbor = currentNeighbors[currentNeighbors.size() - 1];
 			currentNeighbors.pop_back();
@@ -251,7 +346,7 @@ void voronoi() {
 			auto check = hexes[neighbor];
 			if (check.second > d && check.first != pieceCount) {
 				hexes[neighbor] = make_pair(pieceCount, d);
-				auto newNeighbors = neighbors(neighbor);
+				auto newNeighbors = neighbors(neighbor,true);
 				for (auto newNeighbor : newNeighbors) {
 					if (hexes[newNeighbor].first != pieceCount) {
 						currentNeighbors.push_back(newNeighbor);
@@ -510,6 +605,19 @@ bool flip() {
 }
 //--------------------------------------------------------------
 void ofApp::setup(){
+	ofxSVG svg;
+	svg.load("cactus.svg");
+	ofPath path = svg.getPaths()[0];
+	path.setStrokeWidth(1);
+	ofPolyline pline = path.getOutline()[0];
+	
+	pline.scale(1, 1);
+
+	pline.translate(ofPoint(inchToPixel * 1, inchToPixel * 1));
+	
+	whimsies.push_back(pline);
+	whimsyHexes.push_back(whimsyIntersects(whimsies[0]));
+
 	CubeCoord mirror1 = { 2 * hexSize + 1,-hexSize - 1,-hexSize };
 	mirrorCenters.push_back(mirror1);
 	cout << "mirror 0 " << mirror1.x << "," << mirror1.y << "," << mirror1.z << endl;
@@ -566,9 +674,29 @@ void ofApp::update(){
 	if (countChange>0) {
 		drawImage(countFrame%100==0);
 	}
-	else {
-		
+	test.begin();
+	for (auto whim : whimsies) {
+		ofSetColor(0, 0, 0);
+		ofBeginShape();
+		for (auto vert : whim) {
+			ofVertex(vert+pixelCenter);
+		}
+		ofEndShape();
 	}
+	for (auto whim : whimsyHexes) {
+
+		ofSetColor(0, 255, 0);
+
+		for (auto hex : whim) {
+			cout << hex.x << "," << hex.y << "," << hex.z << endl;
+			drawHex(hex);
+		}
+	}
+	ofSetColor(255, 0, 255);
+	for (auto mouse : mousehex) {
+		drawHex(mouse);
+	}
+	test.end();
 	if ( countFrame%100==0) {
 		ofImage i; i.allocate(test.getWidth(), test.getHeight(), OF_IMAGE_COLOR);
 		test.readToPixels(i);
@@ -583,8 +711,8 @@ void ofApp::update(){
 
 //--------------------------------------------------------------
 void ofApp::draw(){
-
 	
+	ofSetColor(255);
 	test.draw(0, 0);
 	
 }
@@ -616,7 +744,7 @@ void ofApp::mousePressed(int x, int y, int button){
 
 //--------------------------------------------------------------
 void ofApp::mouseReleased(int x, int y, int button){
-
+	mousehex.push_back(pixelToHex(ofPoint(x, y)));
 }
 
 //--------------------------------------------------------------
